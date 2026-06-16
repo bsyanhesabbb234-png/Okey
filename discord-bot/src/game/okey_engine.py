@@ -113,6 +113,7 @@ class OkeyGame:
     el_cekti:        dict[int, bool]    = field(default_factory=dict)
     mesaj_sayaci:    int                = 0
     bot_modu:        object             = False
+    diskalifiye:     set[int]           = field(default_factory=set)  # DK olan gerçek oyuncular
 
     def oyuncu_ekle(self, user_id: int, ad: str) -> bool:
         if user_id in self.oyuncular:
