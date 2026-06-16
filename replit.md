@@ -1,45 +1,60 @@
-# [Project name]
+# Kahvehane Okey Botu
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Discord üzerinden tam kapsamlı, çok oyunculu Okey deneyimi sunan premium bir Discord botu.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `cd discord-bot && python main.py` — botu başlat
+- Workflow: **Discord Okey Botu** (konsol çıktısı)
+- Gerekli secret: `DISCORD_BOT_TOKEN`
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.11
+- discord.py 2.7
+- Pillow (görsel isteka render)
+- aiosqlite (yerel SQLite veritabanı)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `discord-bot/main.py` — giriş noktası
+- `discord-bot/src/bot.py` — bot + tüm slash komutları
+- `discord-bot/src/game/okey_engine.py` — Okey oyun motoru (taşlar, per, kazanma kontrolü)
+- `discord-bot/src/game/manager.py` — masa & oyun akışı yöneticisi
+- `discord-bot/src/economy/db.py` — SQLite veritabanı, çip ekonomisi
+- `discord-bot/src/ui/views.py` — Discord buton/modal View'ları
+- `discord-bot/src/ui/render.py` — Pillow ile görsel isteka & profil render
+- `discord-bot/okey.db` — oyuncu veritabanı (otomatik oluşur)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Oyun durumu bellekte tutulur (GameState dict), bot yeniden başlayınca aktif masalar sıfırlanır.
+- Kalıcı lobi paneli `LobiView(timeout=None)` ile her boot'ta yeniden kaydedilir.
+- Masa butonları `build_masa_view(masa_id)` ile dinamik olarak oluşturulur; her masanın custom_id'si benzersizdir.
+- Görsel render (Pillow) her istekte anlık üretilir, dosyaya kaydedilmez.
+- Bot oyuncuları negatif user_id (-1, -2, -3, -4) ile temsil edilir.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Ana panel: 5 kalıcı buton (4 kişilik masa, bot maçı, karışık, VIP bahisli, profil)
+- Oyun: taş çekme/atma, per dizme, AI bot rakipler, okey açma
+- Ekonomi: çip sistemi, günlük ödül, transfer, seviye
+- Slash komutları: /okey kur/katil/hizli-mac/izle/ayril, /cuzdan, /gunluk, /gonder, /profil, /liderlik, /yardim
+- Görsel: Pillow ile render edilmiş renkli isteka görseli (ephemeral)
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Yönetici ID: 1513128919182606378 (panel gönderme yetkisi)
+- Dil: Türkçe
+- Emoji: Özel sunucu emojileri ilerleyen aşamada ID ile değiştirilecek
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- `DATABASE_URL` bu projede kullanılmaz; SQLite kullanılır (`okey.db`)
+- pnpm workspace'deki `api-server` bu botla ilgisizdir
+- Slash komutları ilk başlatmada guild'e sync edilir, yayılması 1-60 dakika sürebilir
+- Bot yeniden başlatılırsa aktif masalar sıfırlanır (in-memory)
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- discord.py docs: https://discordpy.readthedocs.io/

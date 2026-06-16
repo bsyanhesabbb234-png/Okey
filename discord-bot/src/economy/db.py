@@ -1,0 +1,149 @@
+import aiosqlite
+import os
+from datetime import datetime, timedelta
+
+DB_PATH = os.path.join(os.path.dirname(__file__), "../../okey.db")
+
+BASLANGIC_CIP = 1000
+GUNLUK_ODUL = 500
+KAZANMA_ODUL = 200
+KAYBETME_CEZA = 50
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS oyuncular (
+                user_id INTEGER PRIMARY KEY,
+                ad TEXT,
+                cip INTEGER DEFAULT 1000,
+                galibiyet INTEGER DEFAULT 0,
+                yenilgi INTEGER DEFAULT 0,
+                toplam_mac INTEGER DEFAULT 0,
+                son_gunluk TEXT,
+                seviye INTEGER DEFAULT 1,
+                kozmetik TEXT DEFAULT '{}',
+                kayit_tarihi TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS mac_gecmisi (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                masa_id TEXT,
+                kazanan_id INTEGER,
+                oyuncular TEXT,
+                bahis INTEGER DEFAULT 0,
+                tarih TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.commit()
+
+async def get_oyuncu(user_id: int) -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM oyuncular WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+            return {}
+
+async def ensure_oyuncu(user_id: int, ad: str) -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT OR IGNORE INTO oyuncular (user_id, ad, cip) VALUES (?, ?, ?)
+        """, (user_id, ad, BASLANGIC_CIP))
+        await db.execute("UPDATE oyuncular SET ad = ? WHERE user_id = ?", (ad, user_id))
+        await db.commit()
+    return await get_oyuncu(user_id)
+
+async def update_cip(user_id: int, miktar: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE oyuncular SET cip = MAX(0, cip + ?) WHERE user_id = ?", (miktar, user_id))
+        await db.commit()
+    oyuncu = await get_oyuncu(user_id)
+    return oyuncu.get("cip", 0)
+
+async def set_cip(user_id: int, miktar: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE oyuncular SET cip = ? WHERE user_id = ?", (max(0, miktar), user_id))
+        await db.commit()
+    return miktar
+
+async def gunluk_al(user_id: int) -> tuple[bool, int, str]:
+    oyuncu = await get_oyuncu(user_id)
+    if not oyuncu:
+        return False, 0, "Kayıt bulunamadı"
+    son = oyuncu.get("son_gunluk")
+    if son:
+        son_dt = datetime.fromisoformat(son)
+        if datetime.now() - son_dt < timedelta(hours=24):
+            kalan = timedelta(hours=24) - (datetime.now() - son_dt)
+            saat = int(kalan.total_seconds() // 3600)
+            dakika = int((kalan.total_seconds() % 3600) // 60)
+            return False, 0, f"{saat}s {dakika}dk"
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE oyuncular SET cip = cip + ?, son_gunluk = ? WHERE user_id = ?
+        """, (GUNLUK_ODUL, datetime.now().isoformat(), user_id))
+        await db.commit()
+    return True, GUNLUK_ODUL, ""
+
+async def mac_bitti(kazanan_id: int, oyuncu_ids: list[int], bahis: int, masa_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        for uid in oyuncu_ids:
+            if uid < 0:
+                continue
+            if uid == kazanan_id:
+                kazanim = KAZANMA_ODUL + bahis * (len([x for x in oyuncu_ids if x > 0]) - 1)
+                await db.execute("""
+                    UPDATE oyuncular SET cip = cip + ?, galibiyet = galibiyet + 1, 
+                    toplam_mac = toplam_mac + 1 WHERE user_id = ?
+                """, (kazanim, uid))
+            else:
+                await db.execute("""
+                    UPDATE oyuncular SET cip = MAX(0, cip - ?), yenilgi = yenilgi + 1,
+                    toplam_mac = toplam_mac + 1 WHERE user_id = ?
+                """, (KAYBETME_CEZA + bahis, uid))
+        oyuncu_str = ",".join(str(x) for x in oyuncu_ids)
+        await db.execute("""
+            INSERT INTO mac_gecmisi (masa_id, kazanan_id, oyuncular, bahis) VALUES (?, ?, ?, ?)
+        """, (masa_id, kazanan_id, oyuncu_str, bahis))
+        await db.commit()
+    await _seviye_guncelle(oyuncu_ids)
+
+async def _seviye_guncelle(oyuncu_ids: list[int]):
+    async with aiosqlite.connect(DB_PATH) as db:
+        for uid in oyuncu_ids:
+            if uid < 0:
+                continue
+            oyuncu = await get_oyuncu(uid)
+            mac = oyuncu.get("toplam_mac", 0)
+            yeni_seviye = 1 + mac // 10
+            await db.execute("UPDATE oyuncular SET seviye = ? WHERE user_id = ?", (yeni_seviye, uid))
+        await db.commit()
+
+async def transfer_cip(gonderen_id: int, alan_id: int, miktar: int) -> tuple[bool, str]:
+    gonderen = await get_oyuncu(gonderen_id)
+    if not gonderen:
+        return False, "Hesabınız bulunamadı."
+    if gonderen.get("cip", 0) < miktar:
+        return False, f"Yeterli çipiniz yok. Mevcut: {gonderen.get('cip', 0):,} 🪙"
+    if miktar <= 0:
+        return False, "Geçersiz miktar."
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE oyuncular SET cip = cip - ? WHERE user_id = ?", (miktar, gonderen_id))
+        await db.execute("UPDATE oyuncular SET cip = cip + ? WHERE user_id = ?", (miktar, alan_id))
+        await db.commit()
+    return True, ""
+
+async def get_liderlik(kategori: str = "cip", limit: int = 10) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if kategori == "galibiyet":
+            query = "SELECT * FROM oyuncular ORDER BY galibiyet DESC, cip DESC LIMIT ?"
+        elif kategori == "mac":
+            query = "SELECT * FROM oyuncular ORDER BY toplam_mac DESC LIMIT ?"
+        else:
+            query = "SELECT * FROM oyuncular ORDER BY cip DESC LIMIT ?"
+        async with db.execute(query, (limit,)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
