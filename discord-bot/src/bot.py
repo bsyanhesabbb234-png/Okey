@@ -184,12 +184,11 @@ bot.tree.add_command(okey_group)
 
 @bot.tree.command(
     name="okey-rol",
-    description="Okey butonlarını kullanabilecek rolleri belirler. (Sadece yönetici)"
+    description="Okey butonlarını kullanabilecek rolleri belirler."
 )
 @app_commands.describe(
     roller="İzin verilecek rol ID'leri — boşlukla ayır. Boş bırakılırsa herkes erişebilir."
 )
-@app_commands.default_permissions(administrator=True)
 async def okey_rol(interaction: discord.Interaction, roller: str = ""):
     if interaction.user.id != 1513128919182606378:
         await interaction.response.send_message(
