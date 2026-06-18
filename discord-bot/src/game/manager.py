@@ -680,6 +680,17 @@ class GameManager:
         embed.set_image(url="attachment://cek.png")
         await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
 
+        # Kanalda herkese duyur
+        channel = interaction.channel
+        if masa.oyun_kanal_id and interaction.guild:
+            oy = interaction.guild.get_channel(masa.oyun_kanal_id)
+            if oy:
+                channel = oy
+        if channel:
+            await channel.send(
+                f"🎴 **{interaction.user.display_name}** talon'dan taş çekti."
+            )
+
     # ── Son taşı al ──────────────────────────────────────────────────────────
     async def son_tasi_al(self, interaction: discord.Interaction, masa_id: str):
         masa = self.masalar.get(masa_id)
@@ -696,6 +707,8 @@ class GameManager:
 
         # Oyuncu işlem yaptı → timeout'u sıfırla
         self._zaman_asimi_iptal(masa_id, interaction.user.id)
+
+        son_tas_goster = str(masa.cop_yigi[-1]) if masa.cop_yigi else "?"
 
         tas = masa.son_tasi_al(interaction.user.id)
         if not tas:
@@ -715,6 +728,17 @@ class GameManager:
         )
         embed.set_image(url="attachment://son_tas.png")
         await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+
+        # Kanalda herkese duyur — alınan taş görünür (son atılan taş biliniyordu zaten)
+        channel = interaction.channel
+        if masa.oyun_kanal_id and interaction.guild:
+            oy = interaction.guild.get_channel(masa.oyun_kanal_id)
+            if oy:
+                channel = oy
+        if channel:
+            await channel.send(
+                f"♻️ **{interaction.user.display_name}** son atılan taşı aldı! `{son_tas_goster}`"
+            )
 
     # ── Taş at (renk+sayı) ───────────────────────────────────────────────────
     async def tas_at_renk_sayi(self, interaction: discord.Interaction, masa_id: str, renk: str, sayi: int):
@@ -841,16 +865,24 @@ class GameManager:
         if gorsel_renk and gorsel_sayi:
             from src.game.okey_engine import COLOR_EMOJI, COLOR_NAMES
             temsil = f"{COLOR_EMOJI.get(gorsel_renk,'')}{COLOR_NAMES.get(gorsel_renk,gorsel_renk)} {gorsel_sayi}"
+            tur_emoji = "⭐" if joker_turu == "okey" else "🃏"
+            tur_ad    = "okey" if joker_turu == "okey" else "joker"
             at_mesaj = (
-                f"🃏 **{interaction.user.display_name}** jokeri **{temsil}** olarak attı!\n"
+                f"{tur_emoji} **{interaction.user.display_name}** "
+                f"**{tur_ad}** taşını **{temsil}** olarak attı!\n"
                 f"🎴 Sıra: **{sonraki_ad}**"
             )
         else:
-            joker_tur_str = "okey taşını" if joker_turu == "okey" else "sahte jokeri"
-            at_mesaj = (
-                f"🃏 **{interaction.user.display_name}** {joker_tur_str} attı!\n"
-                f"🎴 Sıra: **{sonraki_ad}**"
-            )
+            if joker_turu == "okey":
+                at_mesaj = (
+                    f"⭐ **{interaction.user.display_name}** **okey** olarak attı!\n"
+                    f"🎴 Sıra: **{sonraki_ad}**"
+                )
+            else:
+                at_mesaj = (
+                    f"🃏 **{interaction.user.display_name}** **joker** olarak attı!\n"
+                    f"🎴 Sıra: **{sonraki_ad}**"
+                )
 
         await interaction.response.send_message(at_mesaj)
         await self._mesaj_sayaci_artir(channel, masa_id)
