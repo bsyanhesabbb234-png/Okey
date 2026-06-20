@@ -224,17 +224,17 @@ class JokerKullanModal(Modal, title="🃏 Joker Taşı — Hangi Taş Olarak Ata
 
 
 class JokerSecimView(View):
-    """Joker türünü seçmek için geçici buton paneli (sahte joker mi, okey taşı mı)."""
+    """Joker türünü seçmek için geçici buton paneli — 'Joker Ata' veya 'Okey'."""
     def __init__(self, masa_id: str):
         super().__init__(timeout=60)
         self.masa_id = masa_id
 
-    @discord.ui.button(label="🃏 Sahte Jokeri At", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🃏 Joker Ata", style=discord.ButtonStyle.primary)
     async def sahte_joker_at(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(JokerKullanModal(self.masa_id, joker_turu="sahte"))
         self.stop()
 
-    @discord.ui.button(label="⭐ Okey Taşını At", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⭐ Okey", style=discord.ButtonStyle.secondary)
     async def okey_tas_at(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(JokerKullanModal(self.masa_id, joker_turu="okey"))
         self.stop()
@@ -318,7 +318,9 @@ def build_masa_view(masa_id: str) -> View:
     async def joker_at_cb(i):
         if not await _izin(i): return
         await i.response.send_message(
-            "🃏 **Joker Taşı At** — Hangi joker taşını atmak istiyorsun?",
+            "🃏 **Joker Ata** — Hangi taşı atmak istiyorsun?\n"
+            "• **🃏 Joker Ata** → Sahte joker taşını at (sayı & renk atayabilirsin)\n"
+            "• **⭐ Okey** → Renkli okey taşını at (sayı & renk atayabilirsin)",
             view=JokerSecimView(masa_id), ephemeral=True
         )
 

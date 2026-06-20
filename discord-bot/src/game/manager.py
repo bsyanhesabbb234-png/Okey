@@ -4,7 +4,7 @@ import uuid
 from typing import Optional
 from src.game.okey_engine import (
     OkeyGame, GameState, COLOR_EMOJI, COLOR_NAMES,
-    BONUS_NORMAL, BONUS_SAHTE_JOKER, BONUS_CIFTE_OKEY
+    BONUS_NORMAL, BONUS_SAHTE_JOKER, BONUS_CIFTE_OKEY, BONUS_YEDI_CIFT
 )
 from src.economy.db import ensure_oyuncu, update_cip, mac_bitti, get_izin_roller, set_izin_roller
 from src.ui.render import render_el, render_son_tas
@@ -13,55 +13,46 @@ IZLEYICI_ROL_ID  = 1513129008554971256
 ADMIN_USER_ID    = 1513128919182606378
 KARISIK_BEKLEME  = 30
 BOT_SAYAC        = 10
-ZAMAN_ASIMI_SN   = 5 * 60   # 5 dakika
-UYARI_KALA_SN    = 60       # 1 dakika kala uyar
-SONUC_BEKLEME_SN = 120      # 2 dakika sonra kanalı sil
+ZAMAN_ASIMI_SN   = 5 * 60
+UYARI_KALA_SN    = 60
+SONUC_BEKLEME_SN = 120
+LOBI_MESAJ_SURE  = 120   # Lobi "oyun başladı" mesajı 2 dakika sonra silinir
 
 class GameManager:
     def __init__(self):
         self.masalar: dict[str, OkeyGame] = {}
-        # Timeout task'ları: "{masa_id}_{user_id}" -> asyncio.Task
         self.timeout_tasks: dict[str, asyncio.Task] = {}
-        # İzin rolleri: guild_id -> [rol_id, ...] (boş = herkes erişebilir)
         self.izin_roller: dict[int, list[int]] = {}
 
     async def yukle_izin_roller(self, guild_id: int):
-        """DB'den izin rollerini yükle."""
         self.izin_roller[guild_id] = await get_izin_roller(guild_id)
 
     async def izin_rol_guncelle(self, guild_id: int, rol_idleri: list[int]):
-        """İzin rollerini kaydet ve belleği güncelle."""
         await set_izin_roller(guild_id, rol_idleri)
         self.izin_roller[guild_id] = rol_idleri
 
     async def erisim_var_mi(self, interaction: discord.Interaction) -> bool:
         """
-        Kullanıcının Okey butonlarını kullanma yetkisi var mı?
-        - Admin her zaman erişebilir.
-        - İzin rolleri ayarlanmamışsa herkes erişebilir.
-        - Ayarlandıysa sadece o rollere sahip olanlar erişebilir.
-        Erişim yoksa ephemeral hata mesajı gönderir ve False döner.
+        Herkes oynayabilir (varsayılan). Rol kısıtlaması ayarlanırsa sadece o roller.
+        Admin her zaman erişebilir.
         """
-        # Admin her zaman erişebilir
         if interaction.user.id == ADMIN_USER_ID:
             return True
         guild_id = interaction.guild_id
         if not guild_id:
-            return True  # DM'de kısıtlama yok
-        # Önce DB'den yükle (cache miss durumunda)
+            return True
         if guild_id not in self.izin_roller:
             await self.yukle_izin_roller(guild_id)
         roller = self.izin_roller.get(guild_id, [])
         if not roller:
             return True  # Rol ayarlanmamış → herkes erişebilir
-        # Kullanıcının rollerini kontrol et
         if hasattr(interaction.user, "roles"):
             user_rol_ids = {r.id for r in interaction.user.roles}
             if any(rid in user_rol_ids for rid in roller):
                 return True
         await interaction.response.send_message(
             "❌ Bu işlemi yapabilmek için gerekli role sahip değilsiniz.\n"
-            "Sunucu yöneticinize başvurun.",
+            "Sunucu yönetiminize başvurun.",
             ephemeral=True
         )
         return False
@@ -80,14 +71,12 @@ class GameManager:
 
     # ── Zaman aşımı sistemi ──────────────────────────────────────────────────
     def _zaman_asimi_iptal(self, masa_id: str, user_id: int):
-        """Oyuncu bir şey yapınca timeout'u iptal et."""
         key = self._timeout_key(masa_id, user_id)
         task = self.timeout_tasks.pop(key, None)
         if task and not task.done():
             task.cancel()
 
     def _zaman_asimi_baslat(self, channel, guild, masa_id: str, user_id: int):
-        """Gerçek oyuncunun sırası başlayınca 5 dk timeout başlat."""
         self._zaman_asimi_iptal(masa_id, user_id)
         key = self._timeout_key(masa_id, user_id)
         task = asyncio.create_task(
@@ -96,7 +85,6 @@ class GameManager:
         self.timeout_tasks[key] = task
 
     async def _zaman_asimi_sayac(self, channel, guild, masa_id: str, user_id: int):
-        """5 dk sayar; 4. dakikada uyarır, 5. dakikada diskalifiye eder."""
         try:
             uyari_bekleme = ZAMAN_ASIMI_SN - UYARI_KALA_SN
             await asyncio.sleep(uyari_bekleme)
@@ -110,7 +98,7 @@ class GameManager:
             ad = masa.oyuncu_adlari.get(user_id, "Oyuncu")
             if channel:
                 await channel.send(
-                    f"⚠️ **{ad}**, **1 dakika** içinde taş çekmezseniz diskalifiye edileceksiniz! ⏰"
+                    f"⚠️ **{ad}**, **1 dakika** içinde işlem yapmazsanız diskalifiye edileceksiniz! ⏰"
                 )
 
             await asyncio.sleep(UYARI_KALA_SN)
@@ -127,7 +115,6 @@ class GameManager:
             pass
 
     async def _oyuncu_diskalifiye(self, channel, guild, masa_id: str, user_id: int):
-        """Oyuncuyu diskalifiye eder; bir bot ekleyip devam eder."""
         masa = self.masalar.get(masa_id)
         if not masa or masa.durum != GameState.PLAYING:
             return
@@ -135,23 +122,19 @@ class GameManager:
         ad = masa.oyuncu_adlari.get(user_id, "Oyuncu")
         masa.diskalifiye.add(user_id)
 
-        # Oyuncunun elini talon'a karıştır
         if user_id in masa.oyuncu_elleri:
             masa.talon.extend(masa.oyuncu_elleri.pop(user_id))
             import random
             random.shuffle(masa.talon)
 
-        # Oyuncuyu listeden çıkar
         if user_id in masa.oyuncular:
             idx = masa.oyuncular.index(user_id)
             masa.oyuncular.remove(user_id)
-            # Sıra indeksini ayarla
             if masa.siradaki_oyuncu >= len(masa.oyuncular):
                 masa.siradaki_oyuncu = 0
             elif idx < masa.siradaki_oyuncu:
                 masa.siradaki_oyuncu = max(0, masa.siradaki_oyuncu - 1)
 
-        # Kanaldan erişimi kaldır
         if guild and masa.oyun_kanal_id:
             oyun_kanali = guild.get_channel(masa.oyun_kanal_id)
             member = guild.get_member(user_id) if guild else None
@@ -167,16 +150,13 @@ class GameManager:
                 f"💡 Oyuna geri dönmek için **Masaya Katıl** butonuna basabilirsiniz."
             )
 
-        # Gerçek oyuncu kalmadıysa bitir
         gercek_kalan = [u for u in masa.oyuncular if u > 0]
         if not gercek_kalan:
             await self._oyun_bitti(channel, masa_id, -1, guild)
             return
 
-        # Bot ekle yerine devam et (mevcut botlar devam eder)
         await self._bot_tur_kontrol(channel, masa_id)
 
-        # Yeni sıradaki gerçek oyuncu için timeout başlat
         siradaki = masa.siradaki_oyuncu_id()
         if siradaki and siradaki > 0 and guild:
             oyun_kanali = guild.get_channel(masa.oyun_kanal_id) if masa.oyun_kanal_id else channel
@@ -185,20 +165,37 @@ class GameManager:
     # ── Özel kanal oluştur/sil ───────────────────────────────────────────────
     async def _oyun_kanali_olustur(self, guild: discord.Guild, masa: OkeyGame) -> Optional[discord.TextChannel]:
         try:
+            # Herkes görebilir ama sadece admin yazabilir (oyuncular butonlarla oynar)
             overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=False,
+                    read_message_history=True
+                ),
             }
+            # Admin mesaj yazabilir
+            admin_member = guild.get_member(ADMIN_USER_ID)
+            if admin_member:
+                overwrites[admin_member] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
+                )
+            # İzleyici rolü — görüntüleyebilir, yazamaz
             izleyici = guild.get_role(IZLEYICI_ROL_ID)
             if izleyici:
                 overwrites[izleyici] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=False, read_message_history=True
                 )
+            # Oyuncular — görüntüleyebilir (butonlarla oynayabilirler), metin mesajı atamaz
             for uid in masa.oyuncular:
                 if uid > 0:
                     member = guild.get_member(uid)
                     if member:
                         overwrites[member] = discord.PermissionOverwrite(
-                            view_channel=True, send_messages=True, read_message_history=True
+                            view_channel=True,
+                            send_messages=False,
+                            read_message_history=True
                         )
             kategori = discord.utils.get(guild.categories, name="🎲 Okey Masaları")
             if not kategori:
@@ -218,14 +215,14 @@ class GameManager:
             return None
 
     async def _kanal_member_ekle(self, guild: discord.Guild, kanal: discord.TextChannel, user_id: int):
-        """Sonradan katılan oyuncuya kanal erişimi ver."""
+        """Sonradan katılan oyuncuya kanal erişimi ver (buton kullanımı için görme yeterli)."""
         member = guild.get_member(user_id)
         if member:
             try:
                 await kanal.set_permissions(
                     member,
                     view_channel=True,
-                    send_messages=True,
+                    send_messages=False,
                     read_message_history=True
                 )
             except Exception:
@@ -239,7 +236,7 @@ class GameManager:
             pass
 
     async def _lobi_mesaji_sil(self, guild: discord.Guild, lobi_kanal_id: int, lobi_msg_id: int):
-        """Lobi kanalındaki 'Oyun başladı' mesajını oyun bitince sil."""
+        """Lobi kanalındaki 'Oyun başladı' mesajını sil."""
         try:
             kanal = guild.get_channel(lobi_kanal_id)
             if kanal is None:
@@ -250,8 +247,16 @@ class GameManager:
         except Exception:
             pass
 
+    async def _lobi_mesaji_sil_2dk(self, kanal, mesaj_id: int):
+        """Lobi 'oyun başladı' mesajını 2 dakika sonra otomatik sil."""
+        await asyncio.sleep(LOBI_MESAJ_SURE)
+        try:
+            msg = await kanal.fetch_message(mesaj_id)
+            await msg.delete()
+        except Exception:
+            pass
+
     async def _panel_mesaji_sil(self, channel, panel_mesaj_id: Optional[int]):
-        """Oyun kanalındaki eski buton panelini sil."""
         if not panel_mesaj_id or not channel:
             return
         try:
@@ -265,7 +270,6 @@ class GameManager:
         masa = self.masalar.get(masa_id)
         if not masa:
             return
-        # Eski paneli sil
         await self._panel_mesaji_sil(channel, masa.panel_mesaj_id)
         from src.ui.views import build_masa_view
         embed = self._oyun_embed(masa)
@@ -393,12 +397,10 @@ class GameManager:
         if mevcut:
             await interaction.response.send_message(f"❌ Zaten `{mevcut}` masadasınız.", ephemeral=True); return
 
-        # ── Oyun sırasında katılma (bot yerini al) ─────────────────────────
         if masa.durum == GameState.PLAYING:
             await self._oyun_sirasinda_katil(interaction, masa_id)
             return
 
-        # ── Bekleme aşamasında katılma ────────────────────────────────────
         if masa.durum != GameState.WAITING:
             await interaction.response.send_message("❌ Bu masaya artık katılılamaz.", ephemeral=True); return
 
@@ -431,18 +433,15 @@ class GameManager:
             )
 
     async def _oyun_sirasinda_katil(self, interaction: discord.Interaction, masa_id: str):
-        """Devam eden oyuna katıl — bir botun yerini al."""
         masa = self.masalar.get(masa_id)
         user_id = interaction.user.id
 
-        # Diskalifiye kontrol
         if user_id in masa.diskalifiye:
             await interaction.response.send_message(
                 "❌ Bu masada daha önce diskalifiye oldunuz, tekrar katılamazsınız.", ephemeral=True
             )
             return
 
-        # Bot var mı?
         mevcut_botlar = [uid for uid in masa.oyuncular if uid in masa.bot_oyuncular]
         if not mevcut_botlar:
             await interaction.response.send_message(
@@ -450,7 +449,6 @@ class GameManager:
             )
             return
 
-        # Bahis kontrolü
         if masa.bahis > 0:
             o = await ensure_oyuncu(user_id, interaction.user.display_name)
             if o.get("cip", 0) < masa.bahis:
@@ -459,11 +457,9 @@ class GameManager:
                 )
                 return
 
-        # En uygun botu seç (en küçük bot_id, yani -1, -2...)
         bot_id = mevcut_botlar[0]
         bot_idx = masa.oyuncular.index(bot_id)
 
-        # Botun elini yeni oyuncuya ver
         bot_eli = masa.oyuncu_elleri.pop(bot_id, [])
         masa.oyuncular[bot_idx] = user_id
         masa.oyuncu_adlari[user_id] = interaction.user.display_name
@@ -473,13 +469,11 @@ class GameManager:
         masa.oyuncu_adlari.pop(bot_id, None)
         masa.el_cekti.pop(bot_id, None)
 
-        # Kanala erişim ver
         if interaction.guild and masa.oyun_kanal_id:
             oyun_kanali = interaction.guild.get_channel(masa.oyun_kanal_id)
             if oyun_kanali:
                 await self._kanal_member_ekle(interaction.guild, oyun_kanali, user_id)
 
-        # Timeout başlat (bu oyuncunun sırası aktifse)
         if masa.siradaki_oyuncu_id() == user_id and interaction.guild:
             oyun_kanali = interaction.guild.get_channel(masa.oyun_kanal_id) if masa.oyun_kanal_id else interaction.channel
             self._zaman_asimi_baslat(oyun_kanali or interaction.channel, interaction.guild, masa_id, user_id)
@@ -539,7 +533,7 @@ class GameManager:
 
         hedef = oyun_kanali or kanal
 
-        # Lobi panelini (masa kuruldu mesajı) sil
+        # Lobi panelindeki masa kuruldu mesajını sil
         if kanal and masa.mesaj_id:
             try:
                 msg = await kanal.fetch_message(masa.mesaj_id)
@@ -551,11 +545,13 @@ class GameManager:
         if kanal and oyun_kanali and oyun_kanali.id != kanal.id:
             try:
                 lobi_msg = await kanal.send(
-                    f"🎲 **Oyun başladı!** Oyuncular: {oyuncu_list}\n"
+                    f"🎲 **Okey başladı!** Oyuncular: {oyuncu_list}\n"
                     f"📍 Oyun kanalı: {oyun_kanali.mention}"
                 )
                 masa.lobi_mesaj_id = lobi_msg.id
                 masa.lobi_kanal_id = kanal.id
+                # 2 dakika sonra otomatik sil
+                asyncio.create_task(self._lobi_mesaji_sil_2dk(kanal, lobi_msg.id))
             except Exception:
                 pass
 
@@ -564,12 +560,12 @@ class GameManager:
                 f"🎲 **Kahvehane Okey Başladı!**\n"
                 f"👥 **Oyuncular:** {oyuncu_list}\n"
                 f"🎴 **Okey Taşı:** {self._okey_str(masa)}\n"
-                f"⏳ **İlk Sıra:** {masa.oyuncu_adlari.get(masa.siradaki_oyuncu_id(), '?')}\n"
+                f"⏳ **İlk Sıra:** {masa.oyuncu_adlari.get(masa.siradaki_oyuncu_id(), '?')} "
+                f"*(15 taşı var — taş çekmeden atar)*\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━"
             )
             await self._panel_gonder(hedef, masa_id)
 
-        # İlk gerçek oyuncu için timeout başlat
         siradaki = masa.siradaki_oyuncu_id()
         if siradaki and siradaki > 0 and guild:
             self._zaman_asimi_baslat(hedef, guild, masa_id, siradaki)
@@ -578,8 +574,9 @@ class GameManager:
 
     # ── Bot turları ──────────────────────────────────────────────────────────
     async def _bot_tur_kontrol(self, channel, masa_id: str):
-        """Bot sıralarını zincirleme oynatır; gerçek oyuncuya geçince panel + timeout başlatır."""
-        while True:
+        """Bot sıralarını zincirleme oynatır. Donma önleme: max iterasyon + None kontrolü."""
+        max_iter = 60
+        for _ in range(max_iter):
             masa = self.masalar.get(masa_id)
             if not masa or masa.durum != GameState.PLAYING:
                 return
@@ -588,28 +585,46 @@ class GameManager:
                 # Gerçek oyuncunun sırası — panel gönder + timeout başlat
                 if channel:
                     await channel.send(
-                        f"🎴 Sıra: **{masa.oyuncu_adlari.get(siradaki, '?')}** — Taş çekin! ⏰ *(5 dakika süreniz var)*"
+                        f"🎴 Sıra: **{masa.oyuncu_adlari.get(siradaki, '?')}** — "
+                        f"Taş çekin veya son atılanı alın! ⏰ *(5 dakika süreniz var)*"
                     )
                     await self._panel_gonder(channel, masa_id)
-                # Guild bilgisini almaya çalış (channel üzerinden)
                 guild = getattr(channel, "guild", None)
                 if guild and siradaki and siradaki > 0:
                     self._zaman_asimi_baslat(channel, guild, masa_id, siradaki)
                 return
+
             await asyncio.sleep(1.5)
             masa = self.masalar.get(masa_id)
             if not masa or masa.durum != GameState.PLAYING:
                 return
+
             atilan = masa.bot_hamle_yap(siradaki)
             bot_ad = masa.oyuncu_adlari.get(siradaki, "Bot")
+
             if masa.durum == GameState.FINISHED:
                 if channel:
                     await channel.send(f"🤖 **{bot_ad}** OKEY AÇTI! 🎉")
                 guild = getattr(channel, "guild", None)
                 await self._oyun_bitti(channel, masa_id, siradaki, guild)
                 return
-            if channel and atilan:
-                await channel.send(f"🤖 **{bot_ad}** `{str(atilan)}` attı.")
+
+            if atilan is not None:
+                if channel:
+                    await channel.send(f"🤖 **{bot_ad}** `{str(atilan)}` attı.")
+            else:
+                # Bot taş atamadı — talon + cop_yigi boşsa oyun bitti
+                masa = self.masalar.get(masa_id)
+                if masa and not masa.talon and not masa.cop_yigi:
+                    if channel:
+                        await channel.send("⚠️ **Talon ve tabla bitti!** Oyun beraberlikle sona erdi.")
+                    guild = getattr(channel, "guild", None)
+                    await self._oyun_bitti(channel, masa_id, -1, guild)
+                    return
+                # Devam et (turn zaten ilerletildi _bot_at_normal içinde)
+
+        # Güvenlik: max iterasyona ulaşıldı
+        print(f"[UYARI] _bot_tur_kontrol max iterasyona ulaştı: {masa_id}")
 
     # ── El gör ──────────────────────────────────────────────────────────────
     async def el_goster(self, interaction: discord.Interaction, masa_id: str):
@@ -620,6 +635,7 @@ class GameManager:
             await interaction.response.send_message("❌ Oyun başlamadı veya masada değilsiniz.", ephemeral=True); return
 
         el = masa.oyuncu_elleri[interaction.user.id]
+        # El görseli — peri_diz sonrası sıra korunur
         img_buf = render_el(el, masa.okey_tas, title=f"🀄 {interaction.user.display_name} — Elinizdeki Taşlar")
         file = discord.File(img_buf, filename="el.png")
 
@@ -628,30 +644,25 @@ class GameManager:
             if t.okey:
                 emoji = "🃏"
                 label = t.display_label()
-                # Okey taşı mı?
-                okey_isareti = ""
             elif masa.okey_tas and t.renk == masa.okey_tas.renk and t.sayi == masa.okey_tas.sayi:
                 emoji = COLOR_EMOJI.get(t.renk, "⬜")
                 label = f"{COLOR_NAMES.get(t.renk, t.renk)} {t.sayi} ⭐(Okey)"
-                okey_isareti = ""
             else:
                 emoji = COLOR_EMOJI.get(t.renk, "⬜")
                 label = f"{COLOR_NAMES.get(t.renk, t.renk)} {t.sayi}"
-                okey_isareti = ""
-            el_satirlar.append(f"`{i+1:>2}.` {emoji} **{label}**{okey_isareti}")
+            el_satirlar.append(f"`{i+1:>2}.` {emoji} **{label}**")
 
         el_text = "\n".join(el_satirlar)
 
-        # Joker/okey taş rehberi
         joker_rehber = ""
         sahte_var = any(t.okey for t in el)
         okey_var = any(not t.okey and masa.okey_tas
                        and t.renk == masa.okey_tas.renk and t.sayi == masa.okey_tas.sayi
                        for t in el)
         if sahte_var:
-            joker_rehber += "\n🃏 **Sahte Joker**: *Joker Ata* butonuyla istediğin taş olarak at"
+            joker_rehber += "\n🃏 **Sahte Joker**: *Joker Ata* → *Joker Ata* seçeneğiyle at (sayı atayabilirsin)"
         if okey_var:
-            joker_rehber += f"\n⭐ **Okey Taşı** ({self._okey_str(masa)}): *Joker Ata* → *Okey Taşını At* ile at"
+            joker_rehber += f"\n⭐ **Okey Taşı** ({self._okey_str(masa)}): *Joker Ata* → *Okey* seçeneğiyle at"
 
         embed = discord.Embed(
             title="🀄 Elinizdeki Taşlar",
@@ -659,7 +670,7 @@ class GameManager:
                 f"**Okey taşı:** {self._okey_str(masa)}\n"
                 f"**Taş sayısı:** {len(el)}\n\n"
                 f"{el_text}\n\n"
-                f"💡 *Normal taşlar için **Taş At**, joker için **Joker Ata** butonuna bas.*"
+                f"💡 *Normal taşlar için **Taş At**, joker/okey için **Joker Ata** butonuna bas.*"
                 f"{joker_rehber}"
             ),
             color=0x2ecc71
@@ -675,6 +686,7 @@ class GameManager:
         if interaction.user.id not in masa.oyuncu_elleri:
             await interaction.response.send_message("❌ Masada değilsiniz.", ephemeral=True); return
 
+        # Eli sırala ve kaydet — sonraki El Gör aynı düzeni gösterir
         masa.peri_diz(interaction.user.id, mod)
         el = masa.oyuncu_elleri[interaction.user.id]
         img_buf = render_el(
@@ -698,7 +710,7 @@ class GameManager:
 
         embed = discord.Embed(
             title="🀄 Perlendi!",
-            description=f"{mod_aciklama}\n\n{el_text}",
+            description=f"{mod_aciklama}\n\n{el_text}\n\n💡 **El Gör** butonuna basınca aynı sırayla görünür.",
             color=0x3498db
         )
         embed.set_image(url="attachment://per.png")
@@ -716,7 +728,6 @@ class GameManager:
         if masa.el_cekti.get(interaction.user.id):
             await interaction.response.send_message("❌ Bu turda zaten taş çektiniz — şimdi taş atın!", ephemeral=True); return
 
-        # Oyuncu işlem yaptı → timeout'u sıfırla
         self._zaman_asimi_iptal(masa_id, interaction.user.id)
 
         tas = masa.talon_cek(interaction.user.id)
@@ -731,14 +742,13 @@ class GameManager:
             description=(
                 f"**Çekilen taş:** {str(tas)}\n"
                 f"**Taş sayınız:** {len(el)}\n\n"
-                f"💡 Şimdi **Taş At** butonuna basıp atmak istediğiniz taşın **rengini** ve **sayısını** girin."
+                f"💡 **Taş At** veya **Joker Ata** ile bir taş atın."
             ),
             color=0xf39c12
         )
         embed.set_image(url="attachment://cek.png")
         await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
 
-        # Kanalda herkese duyur
         channel = interaction.channel
         if masa.oyun_kanal_id and interaction.guild:
             oy = interaction.guild.get_channel(masa.oyun_kanal_id)
@@ -763,7 +773,6 @@ class GameManager:
         if not masa.cop_yigi:
             await interaction.response.send_message("❌ Tabloda henüz taş yok!", ephemeral=True); return
 
-        # Oyuncu işlem yaptı → timeout'u sıfırla
         self._zaman_asimi_iptal(masa_id, interaction.user.id)
 
         son_tas_goster = str(masa.cop_yigi[-1]) if masa.cop_yigi else "?"
@@ -780,14 +789,13 @@ class GameManager:
             description=(
                 f"**Aldığınız taş:** {str(tas)}\n"
                 f"**Taş sayınız:** {len(el)}\n\n"
-                f"💡 Şimdi **Taş At** butonuna basıp atmak istediğiniz taşın **rengini** ve **sayısını** girin."
+                f"💡 **Taş At** veya **Joker Ata** ile bir taş atın."
             ),
             color=0x27ae60
         )
         embed.set_image(url="attachment://son_tas.png")
         await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
 
-        # Kanalda herkese duyur — alınan taş görünür (son atılan taş biliniyordu zaten)
         channel = interaction.channel
         if masa.oyun_kanal_id and interaction.guild:
             oy = interaction.guild.get_channel(masa.oyun_kanal_id)
@@ -822,7 +830,6 @@ class GameManager:
             )
             return
 
-        # Oyuncu işlem yaptı → timeout'u iptal et
         self._zaman_asimi_iptal(masa_id, interaction.user.id)
 
         atilan = masa.tas_at_by_renk_sayi(interaction.user.id, renk, sayi)
@@ -862,6 +869,7 @@ class GameManager:
             tur_mesaj = {
                 "cifte_okey":  "🌟🌟 **ÇİFTE OKEY!** Sahte jokeri kullanmadan KAZANDIN! **+500 🪙** 🌟🌟",
                 "sahte_joker": "🃏🏆 **SAHTE JOKER ile OKEY!** +300 🪙 bonus kazandın!",
+                "yedi_cift":   "🎊🎊 **YEDİ ÇİFT! ÇİFTTEN BİTTİ!** Muhteşem bir el! **+350 🪙** 🎊🎊",
                 "normal":      "🎉🏆 **OKEY AÇILDI! TEBRİKLER!** +200 🪙",
             }.get(kazanma_turu, "🎉 OKEY AÇILDI!")
 
@@ -876,23 +884,20 @@ class GameManager:
             await self._oyun_bitti(channel, masa_id, interaction.user.id, interaction.guild,
                                    kazanma_turu=kazanma_turu)
         else:
+            el = masa.oyuncu_elleri.get(interaction.user.id, [])
             await interaction.response.send_message(
-                "❌ Eliniz henüz geçerli değil!\n"
-                "💡 Tüm taşlarınız **grup** (aynı sayı, farklı renk) veya "
-                "**seri** (aynı renk, ardışık sayı) oluşturmalı. "
-                "Okey 🃏 ve renkli okey taşları wildcard olarak kullanılabilir.",
+                f"❌ Eliniz henüz geçerli değil! (**{len(el)} taş**)\n"
+                f"💡 Tüm taşlarınız **grup** (aynı sayı, farklı renk min 3) veya "
+                f"**seri** (aynı renk, ardışık min 3) oluşturmalı.\n"
+                f"🎊 Alternatif: **7 çift** de kazandırır!\n"
+                f"🃏 Joker ve ⭐ okey taşları wildcard olarak kullanılabilir.",
                 ephemeral=True
             )
 
-    # ── Joker at (cezasız, serbest temsil) ───────────────────────────────────
+    # ── Joker at ─────────────────────────────────────────────────────────────
     async def joker_at(self, interaction: discord.Interaction, masa_id: str,
                        gorsel_renk: str = None, gorsel_sayi: int = None,
                        joker_turu: str = "sahte"):
-        """
-        Joker taşı serbestçe at — sahte joker veya renkli okey taşı.
-        gorsel_renk/gorsel_sayi: çöp yığınında gösterilecek temsil (isteğe bağlı).
-        joker_turu: 'sahte' veya 'okey'
-        """
         masa = self.masalar.get(masa_id)
         if not masa:
             await interaction.response.send_message("❌ Masa bulunamadı.", ephemeral=True); return
@@ -933,12 +938,12 @@ class GameManager:
         else:
             if joker_turu == "okey":
                 at_mesaj = (
-                    f"⭐ **{interaction.user.display_name}** **okey** olarak attı!\n"
+                    f"⭐ **{interaction.user.display_name}** **okey taşını** attı!\n"
                     f"🎴 Sıra: **{sonraki_ad}**"
                 )
             else:
                 at_mesaj = (
-                    f"🃏 **{interaction.user.display_name}** **joker** olarak attı!\n"
+                    f"🃏 **{interaction.user.display_name}** **joker taşını** attı!\n"
                     f"🎴 Sıra: **{sonraki_ad}**"
                 )
 
@@ -962,18 +967,25 @@ class GameManager:
 
         await mac_bitti(kazanan_id, masa.oyuncular, masa.bahis, masa_id)
 
-        # Kazanma türüne göre bonus uygula
+        # Kazanma türüne göre ek bonus
         bonus_ekstra = 0
-        if kazanan_id > 0:  # Gerçek oyuncu
+        if kazanan_id > 0:
             if kazanma_turu == "cifte_okey":
-                bonus_ekstra = BONUS_CIFTE_OKEY - BONUS_NORMAL   # 300 ekstra (mac_bitti zaten 200 verdi)
+                bonus_ekstra = BONUS_CIFTE_OKEY - BONUS_NORMAL
             elif kazanma_turu == "sahte_joker":
-                bonus_ekstra = BONUS_SAHTE_JOKER - BONUS_NORMAL   # 100 ekstra
+                bonus_ekstra = BONUS_SAHTE_JOKER - BONUS_NORMAL
+            elif kazanma_turu == "yedi_cift":
+                bonus_ekstra = BONUS_YEDI_CIFT - BONUS_NORMAL
             if bonus_ekstra > 0:
                 await update_cip(kazanan_id, bonus_ekstra)
 
-        # Embed oluştur
-        tur_ikonu = {"cifte_okey": "🌟", "sahte_joker": "🃏", "normal": "🏆"}.get(kazanma_turu, "🏆")
+        tur_ikonu = {
+            "cifte_okey": "🌟",
+            "sahte_joker": "🃏",
+            "yedi_cift": "🎊",
+            "normal": "🏆"
+        }.get(kazanma_turu, "🏆")
+
         embed = discord.Embed(
             title=f"{tur_ikonu} Oyun Bitti!",
             description=f"🎊 **{kazanan_ad}** oyunu kazandı!",
@@ -981,17 +993,11 @@ class GameManager:
         )
 
         if kazanma_turu == "cifte_okey":
-            embed.add_field(
-                name="🌟 Çifte Okey Bonusu!",
-                value="Sahte jokeri kullanmadan kazandınız! Harika oyun!",
-                inline=False
-            )
+            embed.add_field(name="🌟 Çifte Okey Bonusu!", value="Sahte jokeri kullanmadan kazandınız!", inline=False)
         elif kazanma_turu == "sahte_joker":
-            embed.add_field(
-                name="🃏 Sahte Joker Bonusu!",
-                value="Sahte jokeri ustalıkla kullanarak kazandınız!",
-                inline=False
-            )
+            embed.add_field(name="🃏 Sahte Joker Bonusu!", value="Sahte jokeri ustalıkla kullanarak kazandınız!", inline=False)
+        elif kazanma_turu == "yedi_cift":
+            embed.add_field(name="🎊 Yedi Çift Bonusu!", value="7 çift yaparak çiftten bitirdiniz! Harika oyun!", inline=False)
 
         temel_kazanim = BONUS_NORMAL + (masa.bahis * (len(gercek) - 1) if masa.bahis > 0 else 0)
         toplam_kazanim = temel_kazanim + bonus_ekstra
@@ -999,125 +1005,122 @@ class GameManager:
         if masa.bahis > 0:
             embed.add_field(name="💰 Bahis",     value=f"{masa.bahis:,} 🪙", inline=True)
         embed.add_field(name="🎁 Kazanılan",  value=f"{toplam_kazanim:,} 🪙", inline=True)
-        embed.set_footer(text=f"Kanal {SONUC_BEKLEME_SN // 60} dakika sonra silinecek.")
 
-        # Önce eski panel mesajını sil
-        if masa.panel_mesaj_id and channel:
-            await self._panel_mesaji_sil(channel, masa.panel_mesaj_id)
+        oyuncu_str = "\n".join(
+            f"{'🏆' if uid == kazanan_id else '👤'} {masa.oyuncu_adlari.get(uid,'?')}"
+            for uid in masa.oyuncular if uid > 0
+        )
+        if oyuncu_str:
+            embed.add_field(name="👥 Oyuncular", value=oyuncu_str, inline=False)
+        embed.set_footer(text=f"Masa #{masa_id} • Kanal 2 dakika sonra silinecek.")
 
         if channel:
             await channel.send(embed=embed)
 
-        kanal_id      = masa.oyun_kanal_id
-        lobi_msg_id   = masa.lobi_mesaj_id
-        lobi_kanal_id = masa.lobi_kanal_id
-        del self.masalar[masa_id]
+        # Lobi mesajını sil (zaten 2 dk zamanlaması var ama yedek olarak da sil)
+        if masa.lobi_mesaj_id and masa.lobi_kanal_id and guild:
+            asyncio.create_task(
+                self._lobi_mesaji_sil(guild, masa.lobi_kanal_id, masa.lobi_mesaj_id)
+            )
 
-        # 2 dakika bekle, sonra oyun kanalını sil
-        if guild and kanal_id:
-            oy = guild.get_channel(kanal_id)
-            if oy:
-                asyncio.create_task(self._kanal_sil_bekle(oy, SONUC_BEKLEME_SN))
+        # Masayı bellekten kaldır
+        self.masalar.pop(masa_id, None)
 
-        # Lobi kanalındaki "Oyun başladı" mesajını hemen sil
-        if guild and lobi_kanal_id and lobi_msg_id:
-            asyncio.create_task(self._lobi_mesaji_sil(guild, lobi_kanal_id, lobi_msg_id))
+        # Kanalı 2 dakika sonra sil
+        if channel and hasattr(channel, 'delete'):
+            asyncio.create_task(self._kanal_sil_bekle(channel, SONUC_BEKLEME_SN))
 
     # ── Masadan ayrıl ────────────────────────────────────────────────────────
     async def masadan_ayril(self, interaction: discord.Interaction, masa_id: str):
         masa = self.masalar.get(masa_id)
         if not masa:
             await interaction.response.send_message("❌ Masa bulunamadı.", ephemeral=True); return
-        if interaction.user.id not in masa.oyuncular:
+        user_id = interaction.user.id
+        if user_id not in masa.oyuncular:
             await interaction.response.send_message("❌ Bu masada değilsiniz.", ephemeral=True); return
 
-        # Timeout iptal et
-        self._zaman_asimi_iptal(masa_id, interaction.user.id)
+        self._zaman_asimi_iptal(masa_id, user_id)
+        ad = masa.oyuncu_adlari.get(user_id, "Oyuncu")
 
-        channel = interaction.channel
-        if masa.oyun_kanal_id and interaction.guild:
-            oy = interaction.guild.get_channel(masa.oyun_kanal_id)
-            if oy:
-                channel = oy
-
-        if masa.durum == GameState.PLAYING:
-            await update_cip(interaction.user.id, -100)
-            await interaction.response.send_message(
-                "⚠️ Aktif maçtan ayrıldığınız için **100 🪙** ceza uygulandı.\n"
-                "💡 Diskalifiye olmadığınızdan **Masaya Katıl** butonuyla geri dönebilirsiniz.", ephemeral=True
-            )
-            masa.oyuncu_cikar(interaction.user.id)
-            if not [u for u in masa.oyuncular if u > 0]:
-                await self._oyun_bitti(channel, masa_id, -1, interaction.guild)
-                return
-            if channel:
-                await channel.send(
-                    f"🚪 **{interaction.user.display_name}** masadan ayrıldı.\n"
-                    f"🎴 Sıra: **{masa.oyuncu_adlari.get(masa.siradaki_oyuncu_id(), '?')}**"
-                )
-            await self._bot_tur_kontrol(channel, masa_id)
+        if masa.durum == GameState.WAITING:
+            masa.oyuncu_cikar(user_id)
+            gercek = len([u for u in masa.oyuncular if u > 0])
+            if gercek == 0:
+                self.masalar.pop(masa_id, None)
+                await interaction.response.send_message("🚪 Masadan ayrıldınız. Masa kapatıldı.", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"🚪 **{ad}** masadan ayrıldı.", ephemeral=True)
         else:
-            masa.oyuncu_cikar(interaction.user.id)
-            if not [u for u in masa.oyuncular if u > 0]:
-                if masa_id in self.masalar:
-                    del self.masalar[masa_id]
-                await interaction.response.send_message("✅ Masadan ayrıldınız. Masa kapatıldı.", ephemeral=True)
-                return
-            embed = self._masa_embed(masa)
-            await interaction.response.edit_message(
-                content=f"🚪 **{interaction.user.display_name}** masadan ayrıldı.",
-                embed=embed
+            # Oyun devam ediyor — diskalifiye et
+            await interaction.response.send_message(
+                f"🚪 **{ad}** masadan ayrıldı. Taşları talon'a karıştırıldı.", ephemeral=True
             )
+            channel = interaction.channel
+            if masa.oyun_kanal_id and interaction.guild:
+                oy = interaction.guild.get_channel(masa.oyun_kanal_id)
+                if oy:
+                    channel = oy
+            if channel:
+                await channel.send(f"🚪 **{ad}** masadan ayrıldı!")
 
-    # ── Embed yardımcıları ───────────────────────────────────────────────────
-    def _masa_embed(self, masa: OkeyGame) -> discord.Embed:
-        gercek = len([u for u in masa.oyuncular if u > 0])
-        oyuncu_satirlar = "\n".join(
-            f"{'🤖' if uid < 0 else '👤'} **{ad}**"
-            for uid, ad in masa.oyuncu_adlari.items()
-            if uid in masa.oyuncular
-        )
-        bos = masa.max_oyuncu - len(masa.oyuncular)
-        bos_str = "\n".join(f"⬜ _{i+1}. yer boş..._" for i in range(bos)) if bos else ""
-        embed = discord.Embed(
-            title=f"🎮 Okey Masası — `{masa.masa_id}`",
-            description=(
-                f"**Doluluk:** {gercek}/{masa.max_oyuncu}\n"
-                f"**Bahis:** {'Yok' if masa.bahis == 0 else f'{masa.bahis:,} 🪙'}\n\n"
-                f"**Oyuncular:**\n{oyuncu_satirlar}\n{bos_str}"
-            ),
-            color=0x2ecc71
-        )
-        embed.set_footer(text="Katılmak için 'Masaya Katıl' butonuna basın!")
-        return embed
+            masa.diskalifiye.add(user_id)
+            if user_id in masa.oyuncu_elleri:
+                masa.talon.extend(masa.oyuncu_elleri.pop(user_id))
+                import random
+                random.shuffle(masa.talon)
 
-    def _oyun_embed(self, masa: OkeyGame) -> discord.Embed:
-        sid = masa.siradaki_oyuncu_id()
-        oyuncu_satirlar = "\n".join(
-            f"{'🤖' if uid < 0 else '👤'} **{ad}**" + (" ⏳ **(SIRAN!)**" if uid == sid else "")
-            for uid, ad in masa.oyuncu_adlari.items()
-            if uid in masa.oyuncular
-        )
-        embed = discord.Embed(
-            title=f"🎲 Okey Devam Ediyor — `{masa.masa_id}`",
-            description=(
-                f"**Okey Taşı:** {self._okey_str(masa)}\n"
-                f"**Talon:** {len(masa.talon)} taş\n\n"
-                f"**Oyuncular:**\n{oyuncu_satirlar}"
-            ),
-            color=0xf1c40f
-        )
-        if masa.cop_yigi:
-            embed.add_field(name="♻️ Tablodaki Son Taş", value=f"`{str(masa.cop_yigi[-1])}`", inline=True)
-        embed.add_field(name="🎴 Sıra", value=f"**{masa.oyuncu_adlari.get(sid, '?')}**", inline=True)
-        embed.set_footer(text="El Gör → Talon'dan Çek VEYA Son Taşı Al → Taş At | ⏰ 5 dk süreniz var")
-        return embed
+            idx = masa.oyuncular.index(user_id)
+            masa.oyuncular.remove(user_id)
+            if masa.siradaki_oyuncu >= len(masa.oyuncular):
+                masa.siradaki_oyuncu = 0
+            elif idx < masa.siradaki_oyuncu:
+                masa.siradaki_oyuncu = max(0, masa.siradaki_oyuncu - 1)
 
+            gercek_kalan = [u for u in masa.oyuncular if u > 0]
+            if not gercek_kalan:
+                await self._oyun_bitti(channel, masa_id, -1, interaction.guild)
+            else:
+                await self._bot_tur_kontrol(channel, masa_id)
+
+    # ── Yardımcılar ─────────────────────────────────────────────────────────
     def _okey_str(self, masa: OkeyGame) -> str:
         if not masa.okey_tas:
             return "?"
-        re = COLOR_EMOJI.get(masa.okey_tas.renk, "⬜")
-        ra = COLOR_NAMES.get(masa.okey_tas.renk, masa.okey_tas.renk)
-        return f"{re} **{ra} {masa.okey_tas.sayi}**"
+        renk_emoji = {"kirmizi": "🔴", "sari": "🟡", "mavi": "🔵", "siyah": "⚫"}
+        e = renk_emoji.get(masa.okey_tas.renk, "?")
+        return f"{e}{masa.okey_tas.sayi}"
+
+    def _masa_embed(self, masa: OkeyGame) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🎲 Masa `{masa.masa_id}`",
+            color=0x3498db
+        )
+        oyuncu_listesi = "\n".join(
+            f"{'🤖' if uid < 0 else '👤'} {ad}"
+            for uid, ad in masa.oyuncu_adlari.items()
+        )
+        embed.add_field(name=f"👥 Oyuncular ({masa.doluluk})", value=oyuncu_listesi or "Boş", inline=False)
+        if masa.bahis > 0:
+            embed.add_field(name="💰 Bahis", value=f"{masa.bahis:,} 🪙", inline=True)
+        embed.set_footer(text="Masaya Katıl butonuna basarak oyuna girin!")
+        return embed
+
+    def _oyun_embed(self, masa: OkeyGame) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🎲 Masa `{masa.masa_id}` — Oyun Devam Ediyor",
+            color=0x2ecc71
+        )
+        siradaki = masa.siradaki_oyuncu_id()
+        oyuncu_listesi = "\n".join(
+            f"{'🤖' if uid < 0 else '👤'} {ad}" + (" ⏳" if uid == siradaki else "")
+            for uid, ad in masa.oyuncu_adlari.items()
+        )
+        embed.add_field(name="👥 Oyuncular", value=oyuncu_listesi or "—", inline=False)
+        embed.add_field(name="🎴 Okey Taşı", value=self._okey_str(masa), inline=True)
+        embed.add_field(name="📦 Talon", value=f"{len(masa.talon)} taş", inline=True)
+        if masa.cop_yigi:
+            embed.add_field(name="♻️ Son Atılan", value=str(masa.cop_yigi[-1]), inline=True)
+        return embed
+
 
 game_manager = GameManager()

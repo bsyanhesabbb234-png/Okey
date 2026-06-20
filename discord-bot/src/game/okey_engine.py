@@ -1,5 +1,6 @@
 import random
 import itertools
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
 from enum import Enum
@@ -18,8 +19,9 @@ COLOR_INPUT_MAP = {
 
 # Kazanma bonusları
 BONUS_NORMAL       = 200
-BONUS_SAHTE_JOKER  = 300   # Sahte jokeri wildcard olarak kullanarak kazanma
-BONUS_CIFTE_OKEY   = 500   # Sahte joker elde iken onu kullanmadan kazanma
+BONUS_SAHTE_JOKER  = 300
+BONUS_CIFTE_OKEY   = 500
+BONUS_YEDI_CIFT    = 350
 
 class GameState(Enum):
     WAITING  = "waiting"
@@ -30,9 +32,9 @@ class GameState(Enum):
 class Tas:
     renk: str
     sayi: int
-    okey: bool = False              # True = fiziksel sahte joker taşı
-    gorsel_renk: Optional[str] = None  # Joker için oyuncunun atadığı renk (sadece görsel)
-    gorsel_sayi: Optional[int] = None  # Joker için oyuncunun atadığı sayı (sadece görsel)
+    okey: bool = False
+    gorsel_renk: Optional[str] = None
+    gorsel_sayi: Optional[int] = None
 
     def __str__(self):
         if self.okey:
@@ -43,7 +45,6 @@ class Tas:
         return f"{COLOR_EMOJI[self.renk]}{self.sayi}"
 
     def display_label(self) -> str:
-        """El görüntüsünde insan okunur etiket."""
         if self.okey:
             if self.gorsel_renk and self.gorsel_sayi:
                 renk_ad = COLOR_NAMES.get(self.gorsel_renk, self.gorsel_renk)
@@ -60,16 +61,19 @@ class Tas:
         return hash((self.renk, self.sayi, self.okey))
 
 def create_okey_set() -> list[Tas]:
+    """106 taşlık standart Okey seti: 4 renk × 13 sayı × 2 adet = 104 + 2 sahte joker."""
     seti = []
     for _ in range(2):
         for renk in COLORS:
             for sayi in range(1, 14):
                 seti.append(Tas(renk=renk, sayi=sayi))
+    # 2 adet sahte joker (üzerinde numara olmayan özel taşlar)
     seti.append(Tas(renk="kirmizi", sayi=0, okey=True))
     seti.append(Tas(renk="sari",    sayi=0, okey=True))
     return seti
 
 def determine_okey_tas(goster: Tas) -> Tas:
+    """Açılan gösterge taşının bir üst sayısı ve aynı rengi okey taşıdır."""
     if goster.okey:
         return Tas(renk="kirmizi", sayi=1)
     ns = goster.sayi + 1
@@ -100,11 +104,6 @@ def sort_hand(el: list[Tas], okey_tas=None) -> list[Tas]:
 
 @lru_cache(maxsize=4096)
 def _try_partition(tiles: tuple, jokers: int) -> bool:
-    """
-    Backtracking: tiles (sorted (renk, sayi) tuple listesi) ve jokers adet wildcard
-    kullanarak geçerli Okey setlerine (grup/seri) bölünebilir mi?
-    Tüm taşlar VE tüm jokerler kullanılmalıdır.
-    """
     if not tiles and jokers == 0:
         return True
     if not tiles or jokers < 0:
@@ -113,7 +112,7 @@ def _try_partition(tiles: tuple, jokers: int) -> bool:
     first_renk, first_sayi = tiles[0]
     rest = tiles[1:]
 
-    # ── GRUP dene: aynı sayı, farklı renkler, boyut 3 veya 4 ─────────────────
+    # ── GRUP dene: aynı sayı, farklı renkler, boyut 3 veya 4
     same_sayi = [i for i, (r, s) in enumerate(rest) if s == first_sayi]
 
     for size in (3, 4):
@@ -137,8 +136,7 @@ def _try_partition(tiles: tuple, jokers: int) -> bool:
                 if _try_partition(remaining, jokers - j_for_grup):
                     return True
 
-    # ── SERİ dene: aynı renk, ardışık sayılar, boyut 3+ ─────────────────────
-    # first tile, seri içinde 'off' pozisyonunda olabilir (öncesi joker)
+    # ── SERİ dene: aynı renk, ardışık sayılar, boyut 3+
     for size in range(3, 14):
         for off in range(size):
             start_sayi = first_sayi - off
@@ -148,7 +146,7 @@ def _try_partition(tiles: tuple, jokers: int) -> bool:
             if end_sayi > 13:
                 continue
 
-            j_used = off  # first tile öncesi joker sayısı
+            j_used = off
             if j_used > jokers:
                 continue
 
@@ -157,7 +155,7 @@ def _try_partition(tiles: tuple, jokers: int) -> bool:
 
             for k in range(size):
                 if k == off:
-                    continue  # first tile burada
+                    continue
                 pos_sayi = start_sayi + k
                 idx = next(
                     (i for i, (r, s) in enumerate(rest)
@@ -186,20 +184,36 @@ def _to_sorted_tuples(tas_list: list[Tas]) -> tuple:
         key=lambda x: (renk_order.get(x[0], 9), x[1])
     ))
 
-def check_winner(el: list[Tas], okey_tas: Optional[Tas]) -> tuple[bool, str]:
-    """
-    Elindeki taşlarla kazandı mı?
-    Returns: (kazandi: bool, kazanma_turu: str)
-      kazanma_turu → 'normal' | 'sahte_joker' | 'cifte_okey'
+def _check_yedi_cift(el: list[Tas], okey_tas: Optional[Tas]) -> bool:
+    """7 çift kontrolü — jokerler ve okey taşı serbest olarak çift tamamlayabilir."""
+    if len(el) != 14:
+        return False
+    joker_count = 0
+    normal = []
+    for t in el:
+        if t.okey or (okey_tas and t.renk == okey_tas.renk and t.sayi == okey_tas.sayi):
+            joker_count += 1
+        else:
+            normal.append((t.renk, t.sayi))
+    counts = Counter(normal)
+    pairs = sum(v // 2 for v in counts.values())
+    singles = sum(v % 2 for v in counts.values())
+    # Jokerler önce tekli taşları tamamlar
+    jokers_used = min(singles, joker_count)
+    pairs += jokers_used
+    joker_count -= jokers_used
+    # Kalan jokerler kendi aralarında çift yapar
+    pairs += joker_count // 2
+    return pairs >= 7
 
-    Okey kuralları:
-    - Sahte joker (🃏): herhangi bir taşın yerine geçebilir (wildcard)
-    - Okey taşı (renk+sayı): aynı şekilde wildcard
-    - Çifte Okey: elinde sahte joker varken onu kullanmadan da kazanabiliyorsan
-    - Sahte Joker ile: sahte jokeri wildcard olarak kullanarak kazanma
-    """
-    if len(el) < 14:
+def _check_14_winner(el: list[Tas], okey_tas: Optional[Tas]) -> tuple[bool, str]:
+    """14 taşlık elin kazanıp kazanmadığını kontrol eder."""
+    if len(el) != 14:
         return False, ""
+
+    # Önce 7 çift kontrolü
+    if _check_yedi_cift(el, okey_tas):
+        return True, "yedi_cift"
 
     sahte_jokerler = [t for t in el if t.okey]
     okey_taslari   = [t for t in el if not t.okey and okey_tas
@@ -213,18 +227,36 @@ def check_winner(el: list[Tas], okey_tas: Optional[Tas]) -> tuple[bool, str]:
 
     normal_t = _to_sorted_tuples(normal)
 
-    # Genel kazanma kontrolü (sahte + okey jokerler ile)
     if not _try_partition(normal_t, total_jokers):
         return False, ""
 
-    # Kazanma türünü belirle
     if n_sahte > 0:
-        # Sahte jokersiz kazanabilir mi? (Çifte Okey)
         if _try_partition(normal_t, n_okey):
             return True, "cifte_okey"
         return True, "sahte_joker"
 
     return True, "normal"
+
+def check_winner(el: list[Tas], okey_tas: Optional[Tas]) -> tuple[bool, str]:
+    """
+    Kazandı mı kontrol eder.
+    - 14 taş: doğrudan kontrol
+    - 15 taş: herhangi bir taşı atınca 14'ü geçerli mi
+    Returns: (kazandi: bool, kazanma_turu: str)
+      kazanma_turu → 'normal' | 'sahte_joker' | 'cifte_okey' | 'yedi_cift'
+    """
+    if len(el) == 14:
+        return _check_14_winner(el, okey_tas)
+    elif len(el) == 15:
+        # Herhangi bir taşı atarak 14'ü geçerli mi?
+        for i in range(len(el)):
+            el_14 = el[:i] + el[i+1:]
+            won, tur = _check_14_winner(el_14, okey_tas)
+            if won:
+                return True, tur
+        return False, ""
+    else:
+        return False, ""
 
 # ─── Oyun sınıfı ─────────────────────────────────────────────────────────────
 
@@ -248,8 +280,8 @@ class OkeyGame:
     oyun_kanal_id:   Optional[int]      = None
     mesaj_id:        Optional[int]      = None
     panel_mesaj_id:  Optional[int]      = None
-    lobi_mesaj_id:   Optional[int]      = None   # Lobi kanalındaki "Oyun başladı" mesajı
-    lobi_kanal_id:   Optional[int]      = None   # Lobi kanal ID'si (silinecek mesaj için)
+    lobi_mesaj_id:   Optional[int]      = None
+    lobi_kanal_id:   Optional[int]      = None
     izleyiciler:     list[int]          = field(default_factory=list)
     bot_oyuncular:   set[int]           = field(default_factory=set)
     el_cekti:        dict[int, bool]    = field(default_factory=dict)
@@ -293,12 +325,15 @@ class OkeyGame:
             return False
         seti = create_okey_set()
         random.shuffle(seti)
+        # Gösterge taşını çek, okey taşını belirle
         self.goster_tas = seti.pop()
         self.okey_tas   = determine_okey_tas(self.goster_tas)
+        # Dağıtım: ilk oyuncu 15 taş (okey kuralı), diğerleri 14 taş
         for i, oyuncu in enumerate(self.oyuncular):
-            adet = 14 if i == 0 else 13
+            adet = 15 if i == 0 else 14
             self.oyuncu_elleri[oyuncu] = sort_hand(seti[:adet], self.okey_tas)
             seti = seti[adet:]
+            # İlk oyuncu el_cekti=True: 15 taşı var, sıra onda, taş çekmeden atar
             self.el_cekti[oyuncu] = (i == 0)
         self.talon = seti
         random.shuffle(self.talon)
@@ -321,8 +356,8 @@ class OkeyGame:
         if self.siradaki_oyuncu_id() != user_id:     return None
         if self.el_cekti.get(user_id):               return None
         tas = self.talon.pop(0)
+        # Perleri bozmamak için sıralama YAPMA — taşı sona ekle
         self.oyuncu_elleri[user_id].append(tas)
-        self.oyuncu_elleri[user_id] = sort_hand(self.oyuncu_elleri[user_id], self.okey_tas)
         self.el_cekti[user_id] = True
         return tas
 
@@ -331,13 +366,12 @@ class OkeyGame:
         if self.siradaki_oyuncu_id() != user_id:     return None
         if self.el_cekti.get(user_id):               return None
         tas = self.cop_yigi.pop()
+        # Perleri bozmamak için sıralama YAPMA — taşı sona ekle
         self.oyuncu_elleri[user_id].append(tas)
-        self.oyuncu_elleri[user_id] = sort_hand(self.oyuncu_elleri[user_id], self.okey_tas)
         self.el_cekti[user_id] = True
         return tas
 
     def tas_at_by_renk_sayi(self, user_id: int, renk: str, sayi: int) -> Optional[Tas]:
-        """Renk+sayı ile taş at. Normal taşlar ve jokerler (renk='joker') desteklenir."""
         if self.siradaki_oyuncu_id() != user_id:     return None
         if not self.el_cekti.get(user_id):           return None
         el = self.oyuncu_elleri.get(user_id, [])
@@ -350,7 +384,6 @@ class OkeyGame:
         return None
 
     def tas_at(self, user_id: int, idx: int) -> Optional[Tas]:
-        """İndeks ile taş at. Joker dahil her taş atılabilir."""
         if self.siradaki_oyuncu_id() != user_id:     return None
         if not self.el_cekti.get(user_id):           return None
         el = self.oyuncu_elleri.get(user_id, [])
@@ -363,11 +396,6 @@ class OkeyGame:
     def joker_at(self, user_id: int,
                  gorsel_renk: Optional[str] = None,
                  gorsel_sayi: Optional[int] = None) -> tuple[bool, str]:
-        """
-        Sahte jokeri istenen renk+sayı temsiliyle at (cezasız).
-        gorsel_renk/gorsel_sayi: jokerin görsel olarak hangi taşı temsil ettiği.
-        Returns: (basarili, mesaj)
-        """
         if self.siradaki_oyuncu_id() != user_id:
             return False, "Sıra sizde değil!"
         if not self.el_cekti.get(user_id):
@@ -388,10 +416,6 @@ class OkeyGame:
     def okey_tas_at(self, user_id: int,
                     gorsel_renk: Optional[str] = None,
                     gorsel_sayi: Optional[int] = None) -> tuple[bool, str]:
-        """
-        Renkli okey taşını (göstergeden belirlenen) istenen temsille at (cezasız).
-        Returns: (basarili, mesaj)
-        """
         if self.siradaki_oyuncu_id() != user_id:
             return False, "Sıra sizde değil!"
         if not self.el_cekti.get(user_id):
@@ -416,6 +440,7 @@ class OkeyGame:
         return True, "ok"
 
     def peri_diz(self, user_id: int, mod: str = "renk_sayi"):
+        """Eli per düzenine göre sırala ve kaydet (El Gör ile tutarlı)."""
         if user_id not in self.oyuncu_elleri:
             return
         if mod == "sayi_renk":
@@ -424,9 +449,6 @@ class OkeyGame:
             self.oyuncu_elleri[user_id] = sort_hand_renk_sayi(self.oyuncu_elleri[user_id])
 
     def okey_ac(self, user_id: int) -> tuple[bool, str]:
-        """
-        Returns: (kazandi: bool, kazanma_turu: str)
-        """
         if self.siradaki_oyuncu_id() != user_id:     return False, ""
         if not self.el_cekti.get(user_id):           return False, ""
         el = self.oyuncu_elleri.get(user_id, [])
@@ -437,32 +459,40 @@ class OkeyGame:
         return False, ""
 
     def bot_hamle_yap(self, bot_id: int) -> Optional[Tas]:
-        if self.siradaki_oyuncu_id() != bot_id:      return None
+        if self.siradaki_oyuncu_id() != bot_id:
+            return None
         if not self.el_cekti.get(bot_id):
             if self.talon:
                 self.talon_cek(bot_id)
+            elif self.cop_yigi:
+                # Talon bittiyse çöp yığınından al
+                self.son_tasi_al(bot_id)
             else:
+                # Hiç taş kalmadı — turu zorla ilerlet
+                self._tur_bitir(bot_id)
                 return None
         el = self.oyuncu_elleri.get(bot_id, [])
         if not el:
+            self._tur_bitir(bot_id)
             return None
         kazandi, _ = check_winner(el, self.okey_tas)
         if kazandi:
             self.durum = GameState.FINISHED
             return None
-        # Bot sahte jokeri atmayacak — en kötü normal taşı atar
         return self._bot_at_normal(bot_id)
 
     def _bot_at_normal(self, bot_id: int) -> Optional[Tas]:
-        """Bot için en değersiz normal taşı bul ve at."""
+        """Bot için en değersiz normal taşı bul ve at. Donma olmaz."""
         el = self.oyuncu_elleri.get(bot_id, [])
+        if not el:
+            return None
         best_idx = None
         best_puan = float("inf")
         for i, t in enumerate(el):
             if t.okey:
-                continue  # Bot sahte jokeri atmaz
+                continue  # Sahte jokeri atma
             if self.okey_tas and t.renk == self.okey_tas.renk and t.sayi == self.okey_tas.sayi:
-                continue  # Okey taşını atmaz
+                continue  # Okey taşını atma
             puan = sum(
                 1 for j, d in enumerate(el)
                 if i != j and not d.okey and (
@@ -473,12 +503,8 @@ class OkeyGame:
                 best_puan = puan
                 best_idx = i
         if best_idx is None:
-            # Tüm taşlar joker — herhangi birini at (son taşı)
-            best_idx = len(el) - 1
-            while best_idx >= 0 and el[best_idx].okey:
-                best_idx -= 1
-            if best_idx < 0:
-                return None
+            # Tüm taşlar joker/okey — birini atmak zorundayız, ilkini at
+            best_idx = 0
         return self.tas_at(bot_id, best_idx)
 
     @property
