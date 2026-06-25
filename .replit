@@ -24,12 +24,12 @@ args = "Discord Okey Botu"
 name = "Discord Okey Botu"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "cd discord-bot && python main.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [agent]
 stack = "BEST_EFFORT_FALLBACK"
