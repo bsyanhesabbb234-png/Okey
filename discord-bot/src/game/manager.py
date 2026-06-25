@@ -379,6 +379,12 @@ class GameManager:
             return
         gercek = [u for u in masa.oyuncular if u > 0]
         if len(gercek) < 2:
+            if masa.mesaj_id:
+                try:
+                    msg = await interaction.channel.fetch_message(masa.mesaj_id)
+                    await msg.delete()
+                except Exception:
+                    pass
             del self.masalar[masa_id]
             try:
                 await interaction.channel.send("⚠️ Yeterli oyuncu gelmedi (en az 2 kişi gerekli), masa kapatıldı.")
@@ -940,11 +946,11 @@ class GameManager:
         joker_turu='sahte'  → Sahte okey taşını at. Kimliği sabittir: her zaman okey_tas olarak atılır.
         joker_turu='okey'   → Gerçek okey taşını at. Wildcard; opsiyonel renk/sayı görsel alınabilir.
         """
-        async def _yanit(msg: str, ephemeral: bool = True):
+        async def _yanit(msg: str):
             if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=ephemeral)
+                await interaction.followup.send(msg, ephemeral=True)
             else:
-                await interaction.response.send_message(msg, ephemeral=ephemeral)
+                await interaction.response.send_message(msg, ephemeral=True)
 
         masa = self.masalar.get(masa_id)
         if not masa:
@@ -953,19 +959,16 @@ class GameManager:
             await _yanit("❌ Oyun başlamadı."); return
         if masa.siradaki_oyuncu_id() != interaction.user.id:
             await _yanit("❌ Sıra sizde değil!"); return
+        if not masa.el_cekti.get(interaction.user.id):
+            await _yanit("❌ Önce taş çekin!"); return
 
         if joker_turu == "okey":
             basarili, hata = masa.okey_tas_at(interaction.user.id, gorsel_renk, gorsel_sayi)
         else:
-            # Sahte okey: kimlik sabit (okey_tas), renk/sayı kullanıcıdan ALINMAZ
             basarili, hata = masa.joker_at(interaction.user.id)
 
         if not basarili:
-            if interaction.response.is_done():
-                await interaction.followup.send(f"❌ {hata}", ephemeral=True)
-            else:
-                await interaction.response.send_message(f"❌ {hata}", ephemeral=True)
-            return
+            await _yanit(f"❌ {hata}"); return
 
         self._zaman_asimi_iptal(masa_id, interaction.user.id)
 
@@ -983,27 +986,27 @@ class GameManager:
                 temsil = f"{COLOR_EMOJI.get(gorsel_renk,'')}{COLOR_NAMES.get(gorsel_renk,gorsel_renk)} {gorsel_sayi}"
                 at_mesaj = (
                     f"⭐ **{interaction.user.display_name}** gerçek okey taşını "
-                    f"**{temsil}** yerine kullanarak attı!\n"
+                    f"**{temsil}** yerine koydu!\n"
                     f"🎴 Sıra: **{sonraki_ad}**"
                 )
             else:
                 at_mesaj = (
-                    f"⭐ **{interaction.user.display_name}** gerçek okey taşını attı!\n"
+                    f"⭐ **{interaction.user.display_name}** gerçek okey taşını yerine koydu!\n"
                     f"🎴 Sıra: **{sonraki_ad}**"
                 )
         else:
             okey_str = self._okey_str(masa)
             at_mesaj = (
-                f"🃏 **{interaction.user.display_name}** sahte okeyı attı! "
-                f"*(= {okey_str} olarak)*\n"
+                f"🃏 **{interaction.user.display_name}** sahte okeyı yerine koydu! "
+                f"*(= {okey_str})*\n"
                 f"🎴 Sıra: **{sonraki_ad}**"
             )
 
-        # Eğer interaction önceden defer() edildiyse followup kullan, yoksa response kullan
-        if interaction.response.is_done():
+        # Önce interaction'ı onayla, sonra kanala gönder
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        if channel:
             await channel.send(at_mesaj)
-        else:
-            await interaction.response.send_message(at_mesaj)
 
         await self._mesaj_sayaci_artir(channel, masa_id)
         await self._bot_tur_kontrol(channel, masa_id)
@@ -1073,11 +1076,21 @@ class GameManager:
         if channel:
             await channel.send(embed=embed)
 
-        # Lobi mesajını sil (zaten 2 dk zamanlaması var ama yedek olarak da sil)
+        # Oyun panelini hemen sil (butonlu panel)
+        if masa.panel_mesaj_id and channel:
+            try:
+                pmsg = await channel.fetch_message(masa.panel_mesaj_id)
+                await pmsg.delete()
+            except Exception:
+                pass
+            masa.panel_mesaj_id = None
+
+        # Lobi mesajını sil ("Okey başladı!" mesajı)
         if masa.lobi_mesaj_id and masa.lobi_kanal_id and guild:
             asyncio.create_task(
                 self._lobi_mesaji_sil(guild, masa.lobi_kanal_id, masa.lobi_mesaj_id)
             )
+            masa.lobi_mesaj_id = None
 
         # Masayı bellekten kaldır
         self.masalar.pop(masa_id, None)
