@@ -151,8 +151,17 @@ class GameManager:
             )
 
         gercek_kalan = [u for u in masa.oyuncular if u > 0]
-        if not gercek_kalan:
+        if len(gercek_kalan) == 0:
             await self._oyun_bitti(channel, masa_id, -1, guild)
+            return
+        elif len(gercek_kalan) == 1:
+            kazanan_id = gercek_kalan[0]
+            kazanan_ad = masa.oyuncu_adlari.get(kazanan_id, "?")
+            if channel:
+                await channel.send(
+                    f"🏆 Tek oyuncu kaldı! **{kazanan_ad}** oyunu kazandı!"
+                )
+            await self._oyun_bitti(channel, masa_id, kazanan_id, guild)
             return
 
         await self._bot_tur_kontrol(channel, masa_id)
@@ -515,7 +524,14 @@ class GameManager:
             await interaction.response.send_message("❌ Sadece masa kurucusu başlatabilir.", ephemeral=True); return
         if masa.durum != GameState.WAITING:
             await interaction.response.send_message("❌ Masa zaten başlamış.", ephemeral=True); return
-        if len(masa.oyuncular) < 2:
+        gercek_oyuncu_sayisi = len([u for u in masa.oyuncular if u > 0])
+        if not masa.bot_modu and gercek_oyuncu_sayisi < masa.max_oyuncu:
+            kalan = masa.max_oyuncu - gercek_oyuncu_sayisi
+            await interaction.response.send_message(
+                f"❌ Oyuncu masasında **{masa.max_oyuncu} kişi** gerekli! "
+                f"Hâlâ **{kalan} kişi** bekleniyor.", ephemeral=True
+            ); return
+        elif masa.bot_modu and gercek_oyuncu_sayisi < 2:
             await interaction.response.send_message("❌ En az 2 oyuncu gerekli!", ephemeral=True); return
 
         await interaction.response.defer()
@@ -584,8 +600,15 @@ class GameManager:
             if siradaki not in masa.bot_oyuncular:
                 # Gerçek oyuncunun sırası — panel gönder + timeout başlat
                 if channel:
+                    guild = getattr(channel, "guild", None)
+                    mention = ""
+                    if guild and siradaki and siradaki > 0:
+                        member = guild.get_member(siradaki)
+                        if member:
+                            mention = f"{member.mention} "
+                    ad = masa.oyuncu_adlari.get(siradaki, "?")
                     await channel.send(
-                        f"🎴 Sıra: **{masa.oyuncu_adlari.get(siradaki, '?')}** — "
+                        f"🎴 {mention}**Sıra sizde, {ad}!** — "
                         f"Taş çekin veya son atılanı alın! ⏰ *(5 dakika süreniz var)*"
                     )
                     await self._panel_gonder(channel, masa_id)
@@ -1110,8 +1133,16 @@ class GameManager:
                 masa.siradaki_oyuncu = max(0, masa.siradaki_oyuncu - 1)
 
             gercek_kalan = [u for u in masa.oyuncular if u > 0]
-            if not gercek_kalan:
+            if len(gercek_kalan) == 0:
                 await self._oyun_bitti(channel, masa_id, -1, interaction.guild)
+            elif len(gercek_kalan) == 1:
+                kazanan_id = gercek_kalan[0]
+                kazanan_ad = masa.oyuncu_adlari.get(kazanan_id, "?")
+                if channel:
+                    await channel.send(
+                        f"🏆 Diğer oyuncular ayrıldı! **{kazanan_ad}** oyunu kazandı!"
+                    )
+                await self._oyun_bitti(channel, masa_id, kazanan_id, interaction.guild)
             else:
                 await self._bot_tur_kontrol(channel, masa_id)
 
