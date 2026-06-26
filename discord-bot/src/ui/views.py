@@ -367,8 +367,8 @@ def build_masa_view(masa_id: str) -> View:
         # row 1
         Button(label="Talon'dan Çek",      style=discord.ButtonStyle.primary,   emoji="🎴", custom_id=f"talon_{masa_id}",    row=1),
         Button(label="Son Taşı Al",        style=discord.ButtonStyle.secondary, emoji="♻️", custom_id=f"son_{masa_id}",      row=1),
-        Button(label="Taş Ata",            style=discord.ButtonStyle.danger,    emoji="🗑️", custom_id=f"at_{masa_id}",       row=1),
-        Button(label="Joker Ata",          style=discord.ButtonStyle.secondary, emoji="🃏", custom_id=f"jokerat_{masa_id}",  row=1),
+        Button(label="Taş At",             style=discord.ButtonStyle.danger,    emoji="🗑️", custom_id=f"at_{masa_id}",       row=1),
+        Button(label="Joker At",           style=discord.ButtonStyle.secondary, emoji="🃏", custom_id=f"jokerat_{masa_id}",  row=1),
         Button(label="Okey Ata",           style=discord.ButtonStyle.secondary, emoji="⭐", custom_id=f"okeyata_{masa_id}",  row=1),
         # row 2
         Button(label="OKEY AÇ! 🏆",       style=discord.ButtonStyle.success,   emoji="🎉", custom_id=f"okey_{masa_id}",     row=2),
