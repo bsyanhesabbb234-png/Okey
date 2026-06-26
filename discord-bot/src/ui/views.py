@@ -340,10 +340,6 @@ def build_masa_view(masa_id: str) -> View:
         from src.game.manager import game_manager
         await game_manager.joker_at(i, masa_id, joker_turu="sahte")
 
-    async def okey_ata_cb(i):
-        if not await _izin(i): return
-        await i.response.send_modal(JokerKullanModal(masa_id, joker_turu="okey"))
-
     async def okey_cb(i):
         if not await _izin(i): return
         from src.game.manager import game_manager
@@ -369,13 +365,12 @@ def build_masa_view(masa_id: str) -> View:
         Button(label="Son Taşı Al",        style=discord.ButtonStyle.secondary, emoji="♻️", custom_id=f"son_{masa_id}",      row=1),
         Button(label="Taş At",             style=discord.ButtonStyle.danger,    emoji="🗑️", custom_id=f"at_{masa_id}",       row=1),
         Button(label="Joker At",           style=discord.ButtonStyle.secondary, emoji="🃏", custom_id=f"jokerat_{masa_id}",  row=1),
-        Button(label="Okey Ata",           style=discord.ButtonStyle.secondary, emoji="⭐", custom_id=f"okeyata_{masa_id}",  row=1),
         # row 2
         Button(label="OKEY AÇ! 🏆",       style=discord.ButtonStyle.success,   emoji="🎉", custom_id=f"okey_{masa_id}",     row=2),
         Button(label="Masayı Başlat",      style=discord.ButtonStyle.primary,   emoji="▶️", custom_id=f"baslat_{masa_id}",   row=2),
         Button(label="Masadan Ayrıl",      style=discord.ButtonStyle.danger,    emoji="🚪", custom_id=f"ayril_{masa_id}",    row=2),
     ]
-    cbs = [katil_cb, per_cb, el_cb, talon_cb, son_tas_cb, at_cb, joker_at_cb, okey_ata_cb, okey_cb, baslat_cb, ayril_cb]
+    cbs = [katil_cb, per_cb, el_cb, talon_cb, son_tas_cb, at_cb, joker_at_cb, okey_cb, baslat_cb, ayril_cb]
 
     for btn, cb in zip(buttons, cbs):
         btn.callback = cb
