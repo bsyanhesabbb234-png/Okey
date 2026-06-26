@@ -1006,11 +1006,7 @@ class GameManager:
                 f"🎴 Sıra: **{sonraki_ad}**"
             )
 
-        # Önce interaction'ı onayla, sonra kanala gönder
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
-        if channel:
-            await channel.send(at_mesaj)
+        await interaction.response.send_message(at_mesaj)
 
         await self._mesaj_sayaci_artir(channel, masa_id)
         await self._bot_tur_kontrol(channel, masa_id)

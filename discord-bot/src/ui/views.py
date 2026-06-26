@@ -161,14 +161,18 @@ class TasAtModal(Modal, title="🗑️ Hangi Taşı Atacaksınız? (Taş Ata)"):
         await game_manager.tas_at_renk_sayi(interaction, self.masa_id, renk, sayi)
 
 
-class JokerKullanModal(Modal, title="🃏 Joker Taşı — Hangi Taş Olarak Atacaksın?"):
+class JokerKullanModal(Modal):
     """
     Oyuncu jokerin hangi renk+sayıyı temsil edeceğini seçer.
     Bu seçim tamamen görseldir — joker çöp yığınında o taş olarak görünür.
     Joker mekanik olarak wildcard olmaya devam eder.
     """
     def __init__(self, masa_id: str, joker_turu: str = "sahte"):
-        super().__init__()
+        if joker_turu == "sahte":
+            baslik = "🃏 Joker'i Yerine Koy"
+        else:
+            baslik = "⭐ Okey'i Yerine Koy"
+        super().__init__(title=baslik)
         self.masa_id = masa_id
         self.joker_turu = joker_turu  # "sahte" veya "okey"
 
@@ -333,8 +337,7 @@ def build_masa_view(masa_id: str) -> View:
 
     async def joker_at_cb(i):
         if not await _izin(i): return
-        from src.game.manager import game_manager
-        await game_manager.joker_at(i, masa_id, joker_turu="sahte")
+        await i.response.send_modal(JokerKullanModal(masa_id, joker_turu="sahte"))
 
     async def okey_ata_cb(i):
         if not await _izin(i): return
