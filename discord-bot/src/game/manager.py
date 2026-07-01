@@ -179,27 +179,27 @@ class GameManager:
     # ── Özel kanal oluştur/sil ───────────────────────────────────────────────
     async def _oyun_kanali_olustur(self, guild: discord.Guild, masa: OkeyGame) -> Optional[discord.TextChannel]:
         try:
-            # Herkes görebilir ama sadece admin yazabilir (oyuncular butonlarla oynar)
+            # Varsayılan: herkes kanalı göremez
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
-                    view_channel=True,
+                    view_channel=False,
                     send_messages=False,
-                    read_message_history=True
+                    read_message_history=False
                 ),
             }
-            # Admin mesaj yazabilir
+            # Okey rolü (IZLEYICI_ROL_ID) — kanalı görebilir, yazamaz
+            izleyici_rol = guild.get_role(IZLEYICI_ROL_ID)
+            if izleyici_rol:
+                overwrites[izleyici_rol] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=False, read_message_history=True
+                )
+            # Admin kullanıcı — görüntüler ve yazabilir
             admin_member = guild.get_member(ADMIN_USER_ID)
             if admin_member:
                 overwrites[admin_member] = discord.PermissionOverwrite(
                     view_channel=True,
                     send_messages=True,
                     read_message_history=True
-                )
-            # İzleyici rolü — görüntüleyebilir, yazamaz
-            izleyici = guild.get_role(IZLEYICI_ROL_ID)
-            if izleyici:
-                overwrites[izleyici] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=False, read_message_history=True
                 )
             # Oyuncular — görüntüleyebilir (butonlarla oynayabilirler), metin mesajı atamaz
             for uid in masa.oyuncular:
@@ -211,9 +211,18 @@ class GameManager:
                             send_messages=False,
                             read_message_history=True
                         )
+            # Kategori yoksa oluştur — aynı kısıtlamalarla
+            kat_overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            }
+            if izleyici_rol:
+                kat_overwrites[izleyici_rol] = discord.PermissionOverwrite(view_channel=True)
+            if admin_member:
+                kat_overwrites[admin_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
             kategori = discord.utils.get(guild.categories, name="🎲 Okey Masaları")
             if not kategori:
-                kategori = await guild.create_category("🎲 Okey Masaları")
+                kategori = await guild.create_category("🎲 Okey Masaları", overwrites=kat_overwrites)
             kanal = await guild.create_text_channel(
                 name=f"okey-masa-{masa.masa_id.lower()}",
                 category=kategori,
